@@ -3,29 +3,28 @@
 import { useEffect, useRef } from "react"
 import { useYard } from "@/contexts/yard-context"
 import * as d3 from "d3"
+import { YARD_LAYOUT } from "@/lib/yard-layout"
 
 export function useTrainAnimation() {
   const { state, dispatch } = useYard()
   const animationRef = useRef<Map<string, d3.Timer>>(new Map())
 
   useEffect(() => {
-    // Find trains that need to be animated
-    const movingTrains = state.trains.filter((train) => train.status === "moving" && train.targetNode)
+    const movingTrains = state.trains.filter(
+      (train) => train.status === "moving" && train.targetNode
+    )
 
     movingTrains.forEach((train) => {
-      // Skip if already animating
-      if (animationRef.current.has(train.id)) return
+      if (animationRef.current.has(train.id) || !train.targetNode) return
 
-      const currentNode = state.nodes.find((n) => n.id === train.currentNode)
-      const targetNode = state.nodes.find((n) => n.id === train.targetNode)
-
-      if (!currentNode || !targetNode) return
-
-      // Find the path between nodes
-      const path = findPath(currentNode, targetNode, state.edges, state.nodes)
-      if (path.length === 0) return
-
-      // Create animation
+      const path = findPath(train.currentNode, train.targetNode)
+      if (path.length < 2) {
+        console.warn(`No valid path found for train ${train.id} from ${train.currentNode} to ${train.targetNode}`);
+        // Immediately complete movement if path is invalid to prevent getting stuck
+        dispatch({ type: "COMPLETE_TRAIN_MOVEMENT", trainId: train.id });
+        return;
+      }
+      
       const duration = 3000 // 3 seconds
       const startTime = Date.now()
 
@@ -33,7 +32,6 @@ export function useTrainAnimation() {
         const elapsed = Date.now() - startTime
         const progress = Math.min(elapsed / duration, 1)
 
-        // Calculate position along path
         const position = interpolateAlongPath(path, progress)
 
         dispatch({
@@ -42,7 +40,6 @@ export function useTrainAnimation() {
           position,
         })
 
-        // Complete animation
         if (progress >= 1) {
           timer.stop()
           animationRef.current.delete(train.id)
@@ -50,59 +47,42 @@ export function useTrainAnimation() {
             type: "COMPLETE_TRAIN_MOVEMENT",
             trainId: train.id,
           })
-          dispatch({
-            type: "SET_ANIMATION_STATE",
-            isAnimating: false,
-          })
+          
+          const stillAnimating = state.trains.some(t => t.id !== train.id && t.status === 'moving');
+          if (!stillAnimating) {
+            dispatch({
+              type: "SET_ANIMATION_STATE",
+              isAnimating: false,
+            })
+          }
         }
       })
 
       animationRef.current.set(train.id, timer)
     })
 
-    // Clean up stopped animations
     return () => {
       animationRef.current.forEach((timer) => timer.stop())
       animationRef.current.clear()
     }
-  }, [state.trains, state.nodes, state.edges, dispatch])
+  }, [state.trains, dispatch])
 
   return null
 }
 
-function findPath(start: any, end: any, edges: any[], nodes: any[]): Array<{ x: number; y: number }> {
-  // Simple pathfinding - in a real system, you'd use A* or similar
-  // For now, find direct edge or go through interchange
+function findPath(startNodeId: string, endNodeId: string): Array<{ x: number; y: number }> {
+    const startNode = YARD_LAYOUT.locations[startNodeId as keyof typeof YARD_LAYOUT.locations];
+    const endNode = YARD_LAYOUT.locations[endNodeId as keyof typeof YARD_LAYOUT.locations];
+    const interchange = { x: 900, y: 350 };
 
-  const directEdge = edges.find(
-    (edge) => (edge.from === start.id && edge.to === end.id) || (edge.to === start.id && edge.from === end.id),
-  )
-
-  if (directEdge) {
-    return directEdge.path
-  }
-
-  // Try to find path through interchange
-  const interchangeNode = nodes.find((n) => n.type === "interchange")
-  if (!interchangeNode) return []
-
-  const toInterchange = edges.find(
-    (edge) =>
-      (edge.from === start.id && edge.to === interchangeNode.id) ||
-      (edge.to === start.id && edge.from === interchangeNode.id),
-  )
-
-  const fromInterchange = edges.find(
-    (edge) =>
-      (edge.from === interchangeNode.id && edge.to === end.id) ||
-      (edge.to === interchangeNode.id && edge.from === end.id),
-  )
-
-  if (toInterchange && fromInterchange) {
-    return [...toInterchange.path, ...fromInterchange.path.slice(1)]
-  }
-
-  return []
+    if (!startNode || !endNode) return [];
+    
+    // Create a plausible path: start -> interchange -> end for visualization
+    return [
+      { x: startNode.x, y: startNode.y },
+      interchange,
+      { x: endNode.x, y: endNode.y }
+    ];
 }
 
 function interpolateAlongPath(path: Array<{ x: number; y: number }>, progress: number): { x: number; y: number } {
